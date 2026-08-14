@@ -127,3 +127,83 @@ def test_partial_coverage_is_not_recorded_as_a_source_failure():
         "partial lane coverage must be a warning, not a source outcome: "
         "record_failure would set X to PARTIAL and trip strict-exit wrappers"
     )
+
+
+# --- Rome failure: handle promotion without corroboration ------------------
+
+def test_extracted_handles_are_filtered_before_from_lane():
+    """Frequency-extracted handles must be filtered before FROM-lane pull.
+
+    The measured failure: /last30days Rome retrieved 40 X posts, but only ~8
+    were about Rome (all @Turismoromaweb, the explicit --x-handle). The rest
+    were off-topic posts from visegrad24, PrettyCitiesX, earthserenityy --
+    accounts that appeared frequently in the narrow keyword hits but aren't
+    the topic's subject.
+
+    These handles were frequency-extracted by entity_extract, then passed to
+    the FROM lane for a full timeline pull without checking whether they're
+    actually about the topic. The corroboration check only affected
+    resolved_handles_out (for first-party status), not what handles got their
+    timelines pulled.
+
+    Fix: only pass handles to _from_lane that are either:
+    - Explicitly named by the user (--x-handle, --x-related), or
+    - Corroborated as the topic's subject (handle contains/is-contained-by
+      a topic token)
+    """
+    src = _supplements_source()
+
+    # Find the block where handles are passed to _from_lane
+    from_lane_call = "from_items = _from_lane(handles, FROM_LANE_COUNT_PER)"
+    assert from_lane_call in src, "Expected FROM-lane call pattern not found"
+
+    # The handles used in _from_lane should come from filtered/corroborated set.
+    # Check that corroboration logic is applied to extracted_handles before
+    # building the handles list that's passed to _from_lane.
+    assert "extracted_handles" in src, "Expected extracted_handles variable for raw entity extraction"
+    assert "_is_corroborated" in src, "Expected _is_corroborated function for handle filtering"
+
+    # Verify the filtering logic: extracted handles should be filtered
+    # through _is_corroborated before being added to handles list
+    extracted_idx = src.index("extracted_handles")
+    handles_loop_pattern = "for h in extracted_handles"
+    assert handles_loop_pattern in src, "Expected loop filtering extracted_handles"
+
+    loop_idx = src.index(handles_loop_pattern)
+    corroboration_check_idx = src.index("_is_corroborated", loop_idx)
+    assert corroboration_check_idx > loop_idx, (
+        "Extracted handles must be filtered through _is_corroborated before "
+        "being added to the handles list for FROM-lane pulls"
+    )
+
+
+def test_only_corroborated_handles_get_from_lane_pulls():
+    """The handles passed to FROM lane must be subject-corroborated.
+
+    Without corroboration, a spam/engagement-farm account that comments on
+    every trending topic would get its entire 30-day timeline dumped into the
+    results -- exactly the measured failure where visegrad24/PrettyCitiesX
+    crowded out on-topic posts.
+    """
+    src = _supplements_source()
+
+    # The corroboration logic checks if a handle is explicit (--x-handle,
+    # --x-related) or matches topic tokens (handle contains token or vice versa).
+    # Only corroborated handles should get FROM-lane pulls.
+
+    # Verify there's a corroboration check function
+    assert "_is_corroborated" in src, (
+        "Expected _is_corroborated function to filter handles before FROM-lane"
+    )
+
+    # Verify the corroboration logic: explicit OR topic-token match
+    corroboration_check = src[src.index("def _is_corroborated"):src.index("# Filter extracted")]
+    assert "explicit" in corroboration_check, "Corroboration should allow explicit handles"
+    assert "topic_tokens" in corroboration_check, "Corroboration should check topic tokens"
+
+    # Verify extracted handles are filtered before being added to the handles list
+    filter_block = src[src.index("for h in extracted_handles"):src.index("# Collect related")]
+    assert "_is_corroborated" in filter_block, (
+        "Extracted handles must be filtered through _is_corroborated; handles "
+        "like visegrad24 should not get FROM-lane pulls for a 'Rome' topic"
+    )

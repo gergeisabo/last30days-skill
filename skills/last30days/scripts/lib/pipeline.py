@@ -3408,15 +3408,50 @@ def _run_supplemental_searches(
         max_handles=3, max_subreddits=3,
     )
 
-    handles = entities.get("x_handles", [])
+    extracted_handles = entities.get("x_handles", [])
 
-    # Add explicit --x-handle if provided
+    # Explicit handles: user-provided --x-handle and --x-related. These always
+    # get lane searches regardless of corroboration.
+    explicit = {
+        h.lstrip("@").strip().lower()
+        for h in ([x_handle] + list(x_related or []))
+        if h and h.strip()
+    }
+
+    # Topic tokens for corroboration: a frequency-extracted handle must look
+    # like the topic's subject (handle contains a topic token, or vice versa)
+    # to get a FROM-lane pull. Without this gate, engagement-farm accounts that
+    # comment on every trending topic (visegrad24, PrettyCitiesX) get their
+    # entire 30-day timelines dumped into results, crowding out on-topic posts.
+    # Measured failure: /last30days Rome returned 40 X posts, ~8 on-topic,
+    # because visegrad24/PrettyCitiesX/earthserenityy appeared in narrow keyword
+    # hits and got full timeline pulls without being about Rome.
+    topic_tokens = {t for t in re.findall(r"[a-z0-9]+", topic.lower()) if len(t) > 2}
+
+    def _is_corroborated(handle: str) -> bool:
+        """True when a handle is explicitly named or looks like the topic's subject."""
+        clean = handle.lstrip("@").strip().lower()
+        if not clean:
+            return False
+        if clean in explicit:
+            return True
+        return any(token in clean or clean in token for token in topic_tokens)
+
+    # Filter extracted handles to only those corroborated as the topic's subject.
+    # Explicit handles are added unconditionally; extracted handles require
+    # corroboration before they get a full FROM-lane timeline pull.
+    handles = []
     if x_handle:
         handle_clean = x_handle.lstrip("@").lower()
-        if handle_clean not in [h.lower() for h in handles]:
-            handles.insert(0, handle_clean)
+        handles.append(handle_clean)
 
-    # Collect related handles (searched separately with lower weight)
+    for h in extracted_handles:
+        clean = h.lstrip("@").strip().lower()
+        if clean and clean not in [hh.lower() for hh in handles] and _is_corroborated(clean):
+            handles.append(clean)
+
+    # Collect related handles (searched separately with lower weight).
+    # These are explicit, so no corroboration filter needed.
     related_handles = []
     if x_related:
         primary_lower = x_handle.lstrip("@").lower() if x_handle else ""
@@ -3433,31 +3468,15 @@ def _run_supplemental_searches(
     # Populated before the early return below so a run whose lanes cannot execute
     # still contributes its resolved handles.
     if resolved_handles_out is not None:
-        # Only corroborated handles get first-party status. The extracted set is
-        # frequency-ranked over retrieved post text, so a prolific commentator --
-        # or an engagement-farming account that posts on every topic -- lands in
-        # it without being the subject. First-party status is strong: it exempts
-        # an author from the relevance floor entirely and raises their per-author
-        # cap, so granting it on frequency alone would let a spam account buy
-        # immunity from filtering. Require the handle to look like the topic's
-        # subject, or to have been named explicitly by the user.
-        explicit = {
-            h.lstrip("@").strip().lower()
-            for h in ([x_handle] + list(x_related or []))
-            if h and h.strip()
-        }
-        topic_tokens = {t for t in re.findall(r"[a-z0-9]+", topic.lower()) if len(t) > 2}
         seen = {h.lower() for h in resolved_handles_out}
         for h in [*handles, *related_handles]:
             clean = h.lstrip("@").strip().lower()
             if not clean or clean in seen:
                 continue
-            corroborated = clean in explicit or any(
-                token in clean or clean in token for token in topic_tokens
-            )
-            if corroborated:
-                resolved_handles_out.append(clean)
-                seen.add(clean)
+            # All handles reaching here are already corroborated (explicit or
+            # passed the _is_corroborated filter above), so add them directly.
+            resolved_handles_out.append(clean)
+            seen.add(clean)
 
     if not handles and not related_handles:
         return

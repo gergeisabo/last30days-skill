@@ -698,14 +698,22 @@ class TestSupplementalSearches(unittest.TestCase):
     @patch("lib.bird_x.search_handles")
     @patch("lib.entity_extract.extract_entities")
     def test_entity_extract_called_after_phase1(self, mock_extract, mock_handles):
-        """Phase 2 should call entity_extract on Phase 1 X results, then search_handles."""
-        mock_extract.return_value = {"x_handles": ["analyst1", "reporter2"], "x_hashtags": [], "reddit_subreddits": []}
+        """Phase 2 should call entity_extract on Phase 1 X results, then search_handles.
+
+        Extracted handles must pass corroboration (explicit or topic-token match)
+        to get FROM-lane pulls. Without this, engagement-farm accounts that comment
+        on any trending topic would flood results with off-topic timelines.
+        Measured failure: /last30days Rome returned visegrad24/PrettyCitiesX posts
+        about Zelensky/Venice instead of Rome posts.
+        """
+        # Use handles that pass corroboration: contain topic token "safety"
+        mock_extract.return_value = {"x_handles": ["aisafety_analyst", "safety_reporter"], "x_hashtags": [], "reddit_subreddits": []}
         mock_handles.return_value = [
             {
                 "id": "supp1",
-                "text": "Supplemental tweet from analyst1",
-                "url": "https://x.com/analyst1/status/999",
-                "author_handle": "analyst1",
+                "text": "Supplemental tweet from aisafety_analyst",
+                "url": "https://x.com/aisafety_analyst/status/999",
+                "author_handle": "aisafety_analyst",
                 "date": "2026-03-15",
                 "engagement": {"likes": 50},
                 "relevance": 0.8,
@@ -715,8 +723,8 @@ class TestSupplementalSearches(unittest.TestCase):
 
         bundle = schema.RetrievalBundle()
         bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="Some tweet about AI"),
-            _make_source_item("x", "X2", "https://x.com/reporter2/status/2", author="reporter2", body="AI analysis @expert3"),
+            _make_source_item("x", "X1", "https://x.com/aisafety_analyst/status/1", author="aisafety_analyst", body="Some tweet about AI"),
+            _make_source_item("x", "X2", "https://x.com/safety_reporter/status/2", author="safety_reporter", body="AI analysis @expert3"),
         ]
 
         plan = _make_plan("AI safety")
@@ -739,7 +747,7 @@ class TestSupplementalSearches(unittest.TestCase):
         mock_handles.assert_called_once()
         # Supplemental items should be merged into bundle
         x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
-        self.assertIn("https://x.com/analyst1/status/999", x_urls)
+        self.assertIn("https://x.com/aisafety_analyst/status/999", x_urls)
 
     @patch("lib.env.x_backend_chain", return_value=["xquik"])
     @patch("lib.xquik.search_xquik", return_value={"items": []})
@@ -769,17 +777,20 @@ class TestSupplementalSearches(unittest.TestCase):
         self, mock_extract, mock_xq_handles, mock_xq_mentions, *_patches
     ):
         """When xquik is the primary X backend, the FROM/ABOUT handle lanes run
-        via xquik and items land under the single 'x' slug."""
-        mock_extract.return_value = {"x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": []}
+        via xquik and items land under the single 'x' slug.
+
+        Uses handles that pass corroboration (contain topic token 'safety').
+        """
+        mock_extract.return_value = {"x_handles": ["safety_analyst"], "x_hashtags": [], "reddit_subreddits": []}
         mock_xq_handles.return_value = [{
-            "id": "XF1", "text": "from analyst1", "url": "https://x.com/analyst1/status/777",
-            "author_handle": "analyst1", "date": "2026-03-15",
+            "id": "XF1", "text": "from safety_analyst", "url": "https://x.com/safety_analyst/status/777",
+            "author_handle": "safety_analyst", "date": "2026-03-15",
             "engagement": {"likes": 30}, "relevance": 0.8, "why_relevant": "",
         }]
 
         bundle = schema.RetrievalBundle()
         bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="tweet about AI"),
+            _make_source_item("x", "X1", "https://x.com/safety_analyst/status/1", author="safety_analyst", body="tweet about AI"),
         ]
 
         pipeline._run_supplemental_searches(
@@ -791,7 +802,7 @@ class TestSupplementalSearches(unittest.TestCase):
 
         mock_xq_handles.assert_called_once()
         x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
-        self.assertIn("https://x.com/analyst1/status/777", x_urls)
+        self.assertIn("https://x.com/safety_analyst/status/777", x_urls)
         # There is no separate 'xquik' source — everything is under 'x'.
         self.assertNotIn("xquik", bundle.items_by_source)
 
@@ -805,16 +816,19 @@ class TestSupplementalSearches(unittest.TestCase):
     ):
         """When xAI is the topic primary but xquik is in the chain, the
         supplemental handle lanes still run via xquik (first handle-capable
-        backend) rather than being skipped."""
-        mock_extract.return_value = {"x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": []}
+        backend) rather than being skipped.
+
+        Uses handles that pass corroboration (contain topic token 'safety').
+        """
+        mock_extract.return_value = {"x_handles": ["safety_analyst"], "x_hashtags": [], "reddit_subreddits": []}
         mock_xq_handles.return_value = [{
-            "id": "XF1", "text": "from analyst1", "url": "https://x.com/analyst1/status/888",
-            "author_handle": "analyst1", "date": "2026-03-15",
+            "id": "XF1", "text": "from safety_analyst", "url": "https://x.com/safety_analyst/status/888",
+            "author_handle": "safety_analyst", "date": "2026-03-15",
             "engagement": {"likes": 5}, "relevance": 0.8, "why_relevant": "",
         }]
         bundle = schema.RetrievalBundle()
         bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="tweet"),
+            _make_source_item("x", "X1", "https://x.com/safety_analyst/status/1", author="safety_analyst", body="tweet"),
         ]
         pipeline._run_supplemental_searches(
             topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
@@ -824,20 +838,23 @@ class TestSupplementalSearches(unittest.TestCase):
         )
         mock_xq_handles.assert_called_once()
         x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
-        self.assertIn("https://x.com/analyst1/status/888", x_urls)
+        self.assertIn("https://x.com/safety_analyst/status/888", x_urls)
 
     @patch("lib.bird_x.search_handles")
     @patch("lib.entity_extract.extract_entities")
     def test_supplemental_items_deduplicated_by_url(self, mock_extract, mock_handles):
-        """Supplemental items with same URL as Phase 1 should not be duplicated."""
-        mock_extract.return_value = {"x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": []}
+        """Supplemental items with same URL as Phase 1 should not be duplicated.
+
+        Uses handles that pass corroboration (contain topic token 'safety').
+        """
+        mock_extract.return_value = {"x_handles": ["safety_analyst"], "x_hashtags": [], "reddit_subreddits": []}
         # Return item with same URL as Phase 1
         mock_handles.return_value = [
             {
                 "id": "dup1",
                 "text": "Same tweet",
-                "url": "https://x.com/analyst1/status/1",
-                "author_handle": "analyst1",
+                "url": "https://x.com/safety_analyst/status/1",
+                "author_handle": "safety_analyst",
                 "date": "2026-03-15",
                 "engagement": {"likes": 50},
                 "relevance": 0.8,
@@ -846,7 +863,7 @@ class TestSupplementalSearches(unittest.TestCase):
         ]
 
         bundle = schema.RetrievalBundle()
-        original = _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1")
+        original = _make_source_item("x", "X1", "https://x.com/safety_analyst/status/1", author="safety_analyst")
         bundle.items_by_source["x"] = [original]
 
         plan = _make_plan("AI safety")
@@ -868,7 +885,7 @@ class TestSupplementalSearches(unittest.TestCase):
         x_items = bundle.items_by_source.get("x", [])
         urls = [item.url for item in x_items]
         self.assertEqual(
-            urls.count("https://x.com/analyst1/status/1"), 1,
+            urls.count("https://x.com/safety_analyst/status/1"), 1,
             f"Duplicate URL found: {urls}",
         )
 
@@ -1304,14 +1321,17 @@ class TestXRelatedSupplementalSearch(unittest.TestCase):
     @patch("lib.bird_x.search_handles")
     @patch("lib.entity_extract.extract_entities")
     def test_no_x_related_no_supplemental_related_label(self, mock_extract, mock_handles):
-        """Without x_related, supplemental-related label should not appear."""
-        mock_extract.return_value = {"x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": []}
+        """Without x_related, supplemental-related label should not appear.
+
+        Uses handles that pass corroboration (contain topic token 'safety').
+        """
+        mock_extract.return_value = {"x_handles": ["safety_analyst"], "x_hashtags": [], "reddit_subreddits": []}
         mock_handles.return_value = [
             {
                 "id": "supp1",
                 "text": "Supplemental tweet",
-                "url": "https://x.com/analyst1/status/999",
-                "author_handle": "analyst1",
+                "url": "https://x.com/safety_analyst/status/999",
+                "author_handle": "safety_analyst",
                 "date": "2026-03-15",
                 "engagement": {"likes": 50},
                 "relevance": 0.8,
@@ -1321,7 +1341,7 @@ class TestXRelatedSupplementalSearch(unittest.TestCase):
 
         bundle = schema.RetrievalBundle()
         bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1"),
+            _make_source_item("x", "X1", "https://x.com/safety_analyst/status/1", author="safety_analyst"),
         ]
 
         plan = _make_plan("AI safety")

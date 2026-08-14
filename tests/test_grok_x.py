@@ -347,7 +347,14 @@ def test_name_lane_needs_no_handle(monkeypatch):
     assert len(items) == 1
 
 
-def test_name_lane_quotes_multi_word_names(monkeypatch):
+def test_name_lane_uses_and_semantics_for_multi_word_names(monkeypatch):
+    """Multi-word names use AND semantics, not phrase quoting.
+
+    Phrase quoting was too narrow: "Rome Italy" phrase-quoted missed posts like
+    "Trevi Fountain in Rome" that contained topic terms non-adjacently. AND
+    semantics (all terms required, any order) handles both person names and
+    place names without losing coverage.
+    """
     seen = {}
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
 
@@ -357,7 +364,9 @@ def test_name_lane_quotes_multi_word_names(monkeypatch):
 
     monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
     grok_x.search_name("Peter Steinberger", *WINDOW)
-    assert '"Peter Steinberger"' in seen["prompt"]
+    # AND semantics: both terms required, not phrase-quoted
+    assert "Peter Steinberger" in seen["prompt"]
+    assert '"Peter Steinberger"' not in seen["prompt"]
 
 
 def test_name_lane_excludes_subject_authored_posts(monkeypatch):
@@ -455,3 +464,58 @@ def test_depth_drives_the_fanout_call_count():
     deep = grok_x._fanout_queries("t", "2026-07-14", "2026-08-13", 4)
     assert len(quick) == 1 and len(deep) == 4
     assert len(set(deep)) == 4, "fan-out variants must differ or they repeat one result set"
+
+
+# --- Rome failure: phrase quoting multi-word topics ------------------------
+
+def test_fanout_queries_do_not_require_multi_word_topic_as_phrase():
+    """A topic like "Rome Italy" must not be phrase-quoted in all formulations.
+
+    The measured failure: /last30days Rome with search_query "Rome Italy"
+    missed posts saying "Colosseum in Rome" or "Trevi Fountain in Rome" because
+    the engine phrase-quoted "Rome Italy" as the only matching variant. Posts
+    containing both terms (even non-adjacent) are on-topic; requiring them
+    adjacent loses the majority of real discussion.
+
+    At least one fanout variant must use AND semantics (both terms required,
+    any order) rather than phrase semantics (exact adjacent match).
+    """
+    queries = grok_x._fanout_queries("Rome Italy", "2026-07-14", "2026-08-13", 4)
+    # Check that NOT all variants are phrase-quoted
+    and_variants = [q for q in queries if '"Rome Italy"' not in q]
+    assert len(and_variants) >= 1, (
+        "All fanout variants phrase-quote the topic; at least one must use "
+        "AND semantics so 'Colosseum in Rome' can match a 'Rome Italy' topic"
+    )
+    # The first variant should definitely be AND, not phrase
+    assert '"Rome Italy"' not in queries[0], (
+        "The primary (widest) fanout variant must not phrase-quote a multi-word "
+        "topic; AND is wider than phrase"
+    )
+
+
+def test_search_name_does_not_phrase_quote_place_names():
+    """search_name for a place like "Rome Italy" uses AND semantics, not phrase quoting.
+
+    The measured failure: posts mentioning "Rome" without the adjacent bigram
+    "Rome Italy" were structurally ineligible for retrieval. Using AND semantics
+    (both terms required, any order) instead of phrase quoting handles both
+    person names and place names without losing coverage.
+    """
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["prompt"] = cmd[2]
+        return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
+
+    import unittest.mock as m
+    with m.patch.object(grok_x, "binary_path", lambda: "/usr/bin/grok"), \
+         m.patch.object(grok_x.subprocess, "run", fake_run):
+        grok_x.search_name("Rome Italy", *WINDOW)
+
+    # AND semantics: both "Rome" and "Italy" required, not phrase-quoted
+    assert "Rome Italy" in seen["prompt"]
+    assert '"Rome Italy"' not in seen["prompt"], (
+        "search_name must not phrase-quote 'Rome Italy'; AND semantics allows "
+        "posts like 'Trevi Fountain in Rome' to match"
+    )

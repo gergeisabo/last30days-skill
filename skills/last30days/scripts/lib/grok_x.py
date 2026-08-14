@@ -71,12 +71,17 @@ def _fanout_queries(topic: str, from_date: str, to_date: str, calls: int) -> Lis
     Each returns at most 10 posts, and the formulations surface different
     sets -- Top vs Latest ordering, and an engagement-floored variant -- so
     fanning out adds coverage rather than repeating one result set.
+
+    All variants use AND semantics (terms required, any order) rather than
+    phrase semantics (exact adjacent match). Measured failure: "Rome Italy"
+    phrase-quoted missed high-engagement posts like "Colosseum in Rome" that
+    contained topic terms non-adjacently.
     """
     window = f"since:{from_date} until:{to_date}"
     variants = [
         f"{topic} {window}",
         f"{topic} {window} min_faves:5",
-        f'"{topic}" {window}' if " " in topic else f"{topic} {window} filter:links",
+        f"{topic} {window} filter:links",
         f"{topic} {window} -filter:replies",
     ]
     return variants[:calls]
@@ -744,7 +749,23 @@ def search_name(
     # unterminated phrase and matches nothing.
     if name.count('"') % 2:
         name = name.replace('"', " ").strip()
-    phrase = f'"{name}"' if " " in name else name
+
+    # For multi-word names, use AND semantics (all terms required, any order)
+    # rather than phrase semantics (exact adjacent match). This handles both
+    # person names ("Peter Steinberger" -> posts mentioning both terms) and
+    # place names ("Rome Italy" -> posts mentioning both terms, not necessarily
+    # adjacent). Measured failure: "Rome Italy" phrase-quoted missed posts like
+    # "Trevi Fountain in Rome" that contained "Rome" but not the exact bigram
+    # "Rome Italy".
+    #
+    # For single-word names, no quoting needed.
+    if " " in name:
+        # AND semantics: all terms required, any order. This is what X search
+        # does with unquoted multi-word queries by default.
+        search_terms = name
+    else:
+        search_terms = name
+
     excludes = " ".join(
         f"-from:{clean}"
         for clean in (_clean_handle(h) for h in (exclude_handles or []))
@@ -752,7 +773,7 @@ def search_name(
     )
     query = " ".join(
         part for part in
-        [phrase, excludes, f"min_faves:{min_faves}", f"since:{from_date}", f"until:{to_date}"]
+        [search_terms, excludes, f"min_faves:{min_faves}", f"since:{from_date}", f"until:{to_date}"]
         if part
     )
     items, _ = _run_query(

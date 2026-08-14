@@ -917,9 +917,18 @@ class TestBrightDataSetupSurface:
         assert "/Users/x/.npm-global/bin/brightdata" in text
         assert "PATH" in text
 
-    def test_absent_offers_the_install_command_without_running_it(self):
-        text = self._text({"action": "not_installed", "engine_active": False})
-        assert "npm i -g @brightdata/cli" in text
+    def test_absent_without_gh_names_the_prerequisite_first(self):
+        """Telling a user without gh to run a command that fails is worse."""
+        with patch.object(setup_wizard.shutil, "which", lambda n: None):
+            text = self._text({"action": "not_installed", "engine_active": False})
+        assert "cli.github.com" in text
+        assert "gh auth login" in text
+
+    def test_absent_with_gh_offers_the_zero_click_setup(self):
+        with patch.object(setup_wizard.shutil, "which", lambda n: "/usr/bin/gh"):
+            text = self._text({"action": "not_installed", "engine_active": False})
+        assert "set up Amazon signals" in text
+        assert "no credit card" in text
 
 
 class TestBrightDataInstaller:

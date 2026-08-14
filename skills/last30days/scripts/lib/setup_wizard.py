@@ -969,10 +969,21 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
             "your agent session/gateway for Amazon buyer signals to activate"
         )
     elif bd_action == "not_installed":
-        lines.append(
-            "  - Amazon buyer signals not installed (optional; 5,000 free "
-            "requests/month). Install with: npm i -g @brightdata/cli && brightdata login"
-        )
+        # Which advice helps depends on whether the zero-click path is even
+        # reachable; telling a user without gh to run a command that will fail
+        # is worse than naming the prerequisite.
+        if shutil.which("gh") is None:
+            lines.append(
+                "  - Amazon buyer signals available but need the GitHub CLI first "
+                "(https://cli.github.com/), then `gh auth login` — optional, "
+                "5,000 free requests/month, no credit card"
+            )
+        else:
+            lines.append(
+                "  - Amazon buyer signals not set up (optional; 5,000 free "
+                "requests/month, no credit card). Ask me to set up Amazon signals "
+                "and I'll register you through your GitHub login"
+            )
 
     env_written = results.get("env_written", False)
     if env_written:

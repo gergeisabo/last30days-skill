@@ -474,6 +474,28 @@ class FingerprintInvalidation(_CacheDirCase):
         self.assertNotIn("cached-sentinel-report", out)
         self.assertTrue(probe_spy.called)
 
+    def test_grok_state_change_invalidates(self):
+        """Grok auth state (ok/expired/missing) is part of the fingerprint."""
+        from unittest import mock
+        from datetime import datetime, timezone, timedelta
+        from lib import grok_x
+
+        # Write cache with grok OK
+        ok_status = (grok_x.AUTH_OK, "ok", datetime.now(timezone.utc) + timedelta(hours=2))
+        with mock.patch("lib.grok_x.stored_auth_status", return_value=ok_status):
+            self.write_cache(seconds_ago=1)
+
+        # Grok expires: fingerprint should mismatch, cache should be invalidated
+        expired_status = (
+            grok_x.AUTH_EXPIRED,
+            "expired",
+            datetime.now(timezone.utc) - timedelta(hours=2),
+        )
+        with mock.patch("lib.grok_x.stored_auth_status", return_value=expired_status):
+            rc, out, probe_spy = self.run_doctor({}, cached=True)
+        self.assertNotIn("cached-sentinel-report", out)
+        self.assertTrue(probe_spy.called, "grok state change must invalidate cache")
+
     def test_fingerprint_ignores_non_signal_config(self):
         # TTL knob is not a fingerprint signal; same-fingerprint serve holds.
         self.write_cache(seconds_ago=1)

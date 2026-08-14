@@ -330,22 +330,24 @@ def test_stored_auth_status_no_expires_at_is_ok(monkeypatch, tmp_path):
     assert expires_at is None
 
 
-def test_stored_auth_status_unparseable_json_is_ok_with_markers(monkeypatch, tmp_path):
-    """Malformed JSON with credential markers reports AUTH_OK (graceful degradation)."""
+def test_stored_auth_status_unparseable_json_is_expired_with_markers(monkeypatch, tmp_path):
+    """Malformed JSON with credential markers reports AUTH_EXPIRED (fail closed)."""
     store = tmp_path / "auth.json"
     store.write_text('{"refresh_token": "tok" this is not valid json')
     monkeypatch.setattr(grok_x, "token_store_path", lambda: store)
-    status, _, _ = grok_x.stored_auth_status()
-    assert status == grok_x.AUTH_OK
+    status, detail, _ = grok_x.stored_auth_status()
+    assert status == grok_x.AUTH_EXPIRED
+    assert "not parseable" in detail.lower()
 
 
-def test_stored_auth_status_unparseable_expires_at_is_ok(monkeypatch, tmp_path):
-    """Malformed expires_at is ignored, status is AUTH_OK."""
+def test_stored_auth_status_unparseable_expires_at_is_expired(monkeypatch, tmp_path):
+    """Malformed expires_at with credential markers reports AUTH_EXPIRED (fail closed)."""
     store = tmp_path / "auth.json"
     store.write_text('{"iss": {"refresh_token": "tok", "expires_at": "not-a-date"}}')
     monkeypatch.setattr(grok_x, "token_store_path", lambda: store)
-    status, _, expires_at = grok_x.stored_auth_status()
-    assert status == grok_x.AUTH_OK
+    status, detail, expires_at = grok_x.stored_auth_status()
+    assert status == grok_x.AUTH_EXPIRED
+    assert "unparseable" in detail.lower()
     assert expires_at is None
 
 
@@ -360,19 +362,19 @@ def test_stored_auth_status_z_suffix_parses_correctly(monkeypatch, tmp_path):
     assert status == grok_x.AUTH_EXPIRED
 
 
-def test_has_stored_auth_true_when_expired(monkeypatch, tmp_path):
-    """has_stored_auth returns True even when expired (refresh may work)."""
+def test_has_stored_auth_false_when_expired(monkeypatch, tmp_path):
+    """has_stored_auth returns False when expired (skip to avoid credential-store wipe)."""
     from datetime import datetime, timezone, timedelta
     past = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     store = tmp_path / "auth.json"
     store.write_text(f'{{"iss": {{"refresh_token": "tok", "expires_at": "{past}"}}}}')
     monkeypatch.setattr(grok_x, "token_store_path", lambda: store)
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
-    assert grok_x.has_stored_auth() is True
+    assert grok_x.has_stored_auth() is False
 
 
-def test_is_available_true_when_expired(monkeypatch, tmp_path):
-    """is_available returns True when expired (CLI will try refresh at runtime)."""
+def test_is_available_false_when_expired(monkeypatch, tmp_path):
+    """is_available returns False when expired (skip to avoid credential-store wipe)."""
     from datetime import datetime, timezone, timedelta
     past = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     store = tmp_path / "auth.json"
@@ -380,7 +382,7 @@ def test_is_available_true_when_expired(monkeypatch, tmp_path):
     monkeypatch.setattr(grok_x, "token_store_path", lambda: store)
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
     grok_x.clear_availability_cache()
-    assert grok_x.is_available() is True
+    assert grok_x.is_available() is False
 
 
 # --- auth revocation detection ----------------------------------------------

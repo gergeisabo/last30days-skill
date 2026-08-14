@@ -297,14 +297,21 @@ def _probe_grok(config: Dict[str, Any]) -> BackendFinding:
             detail=f"{store_detail} (not live-verified until a run)",
         )
     if store_status == grok_x.AUTH_EXPIRED:
+        # Mark as ERROR so collect-then-pick will NOT select grok. We skip
+        # expired sessions at research time because invoking grok when the
+        # local token is past expires_at triggers an OIDC refresh — and when
+        # that refresh fails (revoked session), grok DELETES auth.json.
+        # A 15–45 s call that wipes the credential store is worse than skipping.
+        # Use X-level DEGRADED only when a fallback backend (bird) is usable.
         expiry_str = expires_at.isoformat() if expires_at else "unknown"
         return BackendFinding(
             name="grok",
-            status=health.DEGRADED,
+            status=health.ERROR,
             requires=requires,
             detail=(
                 f"Grok session expired at {expiry_str}; "
-                "refresh happens at run time (if revoked, run `grok login --device-auth`)"
+                "skipped to avoid credential-store wipe on failed refresh — "
+                "run `grok login --device-auth` to restore"
             ),
             prescription="grok login --device-auth",
         )

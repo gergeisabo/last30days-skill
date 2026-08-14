@@ -203,12 +203,30 @@ def stored_auth_status() -> Tuple[str, str, Optional[datetime]]:
         return AUTH_MISSING, f"Grok credential store at {path} has no stored credentials", None
 
     expires_at: Optional[datetime] = None
+    expires_str: Optional[str] = None
     try:
         data = json.loads(raw)
         expires_str = _find_expires_at(data)
         expires_at = _parse_expires_at(expires_str) if expires_str else None
     except (json.JSONDecodeError, TypeError):
-        pass
+        # Markers present but JSON unparseable: fail closed. The store might
+        # be corrupted or a format we don't understand — do not claim OK.
+        return (
+            AUTH_EXPIRED,
+            f"Grok credential store at {path} contains auth markers but is not parseable JSON; "
+            f"run `grok login --device-auth` to refresh",
+            None,
+        )
+
+    # If we found an expires_at string but couldn't parse it, fail closed.
+    # The presence of a timestamp we can't read is worse than no timestamp.
+    if expires_str is not None and expires_at is None:
+        return (
+            AUTH_EXPIRED,
+            f"Grok credential store at {path} has an unparseable expires_at value; "
+            f"run `grok login --device-auth` to refresh",
+            None,
+        )
 
     if expires_at is not None:
         now = datetime.now(timezone.utc)
@@ -222,20 +240,26 @@ def stored_auth_status() -> Tuple[str, str, Optional[datetime]]:
                 expires_at,
             )
 
-    return AUTH_OK, f"stored Grok credentials found in {path}", expires_at
+    # Markers present, either no expires_at or future expires_at: OK but not
+    # live-verified (the actual session health is confirmed only at run time).
+    return AUTH_OK, f"stored Grok credentials found in {path} (not live-verified until a run)", expires_at
 
 
 def has_stored_auth() -> bool:
-    """True when grok binary is on PATH and credentials are stored.
+    """True when grok binary is on PATH and credentials are stored AND not expired.
 
-    NOTE: This returns True even when AUTH_EXPIRED, because the refresh_token
-    might still work. The caller (is_available) decides whether to attempt
-    grok anyway. Doctor uses the status directly to show the degraded state.
+    Returns False for AUTH_EXPIRED: invoking grok when the local token is past
+    its expires_at triggers an OIDC refresh. When that refresh fails (revoked
+    session), grok DELETES auth.json entirely — a 15–45 s call that wipes the
+    credential store is worse than skipping a possibly-valid refresh and asking
+    the user to re-authenticate via `grok login --device-auth`.
+
+    last30days does not IdP-refresh a locally expired access token.
     """
     if binary_path() is None:
         return False
     status = stored_auth_status()[0]
-    return status in (AUTH_OK, AUTH_EXPIRED)
+    return status == AUTH_OK
 
 
 def is_available() -> bool:
@@ -249,16 +273,18 @@ def is_available() -> bool:
 def _is_available_uncached() -> bool:
     """Research-time availability check.
 
-    Returns True when grok is on PATH and credentials exist, even if
-    AUTH_EXPIRED. Rationale: expires_at being in the past does not prove the
-    refresh_token is dead. The CLI will attempt OIDC refresh at run time and
-    might succeed. Only a runtime failure ("Not signed in", invalid_grant)
-    proves the session is truly revoked.
+    Returns True only when grok is on PATH and credentials exist AND are not
+    past their expires_at. We skip expired sessions at research time because
+    invoking grok when expired triggers an OIDC refresh — and when that refresh
+    fails (revoked session), grok DELETES auth.json. A 15–45 s call that wipes
+    the credential store is worse than skipping.
+
+    last30days does not IdP-refresh a locally expired access token.
     """
     if binary_path() is None:
         return False
     status = stored_auth_status()[0]
-    return status in (AUTH_OK, AUTH_EXPIRED)
+    return status == AUTH_OK
 
 
 def _subprocess_env(home: str) -> Dict[str, str]:

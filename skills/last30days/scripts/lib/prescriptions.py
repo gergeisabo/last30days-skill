@@ -108,6 +108,16 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         anchor="api-keys-env",
     ),
     _entry(
+        "x", "grok_session_expired",
+        cause="Grok session expired; X was served from browser cookies",
+        fix_nl=(
+            "the Grok session expired but X results came via browser cookies; "
+            "re-run `grok login --device-auth` when online to restore the grok path"
+        ),
+        fix_cli="grok login --device-auth",
+        anchor="api-keys-env",
+    ),
+    _entry(
         "scrapecreators", "key_missing",
         cause="SCRAPECREATORS_API_KEY is not set",
         fix_nl=(

@@ -684,6 +684,56 @@ class TestXBackendChainAndFailover(unittest.TestCase):
         self.assertNotIn("xquik", avail)
 
 
+class TestFallbackStatusNotPartial(unittest.TestCase):
+    """Fallback-fully-served is OK, not PARTIAL or AUTH_FAILED."""
+
+    @patch("lib.env.x_backend_chain", return_value=["grok", "bird"])
+    def test_auth_failed_primary_fallback_ok_yields_ok_state(self, _chain):
+        """Primary grok auth-fail → bird succeeds → state is OK, not AUTH_FAILED."""
+        sq = schema.SubQuery(label="primary", search_query="q", ranking_query="q?", sources=["x"])
+
+        def fake_fetch(backend, *a, **k):
+            if backend == "grok":
+                return ([], "grok: grok session expired or was revoked")
+            if backend == "bird":
+                return ([{"id": "B1", "url": "https://x.com/a/status/1"}], "")
+            return ([], "")
+
+        with patch("lib.pipeline._fetch_x_backend", side_effect=fake_fetch):
+            items, artifact = pipeline._retrieve_stream(
+                topic="q", subquery=sq, source="x", config={}, depth="default",
+                date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None), mock=False,
+            )
+        self.assertEqual(1, len(items))
+        # The artifact should have _source_outcome with state OK, not AUTH_FAILED
+        outcome = artifact.get("_source_outcome", {})
+        self.assertEqual("ok", outcome.get("state"), f"Expected OK state, got {outcome}")
+        # Detail should mention fallback
+        self.assertIn("bird", outcome.get("detail", "").lower())
+
+    @patch("lib.env.x_backend_chain", return_value=["grok", "bird"])
+    def test_all_backends_fail_remains_auth_failed(self, _chain):
+        """All backends auth-fail → state remains AUTH_FAILED."""
+        sq = schema.SubQuery(label="primary", search_query="q", ranking_query="q?", sources=["x"])
+
+        def fake_fetch(backend, *a, **k):
+            if backend == "grok":
+                return ([], "grok: grok session expired or was revoked")
+            if backend == "bird":
+                return ([], "bird: cookie expired")
+            return ([], "")
+
+        with patch("lib.pipeline._fetch_x_backend", side_effect=fake_fetch):
+            with self.assertRaises(RuntimeError) as ctx:
+                pipeline._retrieve_stream(
+                    topic="q", subquery=sq, source="x", config={}, depth="default",
+                    date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None), mock=False,
+                )
+        # The exception should have outcome_state AUTH_FAILED
+        exc = ctx.exception
+        self.assertEqual(schema.AUTH_FAILED, getattr(exc, "outcome_state", None))
+
+
 class TestSupplementalSearches(unittest.TestCase):
     """R1: Phase 2 entity drilling should be wired into the pipeline."""
 

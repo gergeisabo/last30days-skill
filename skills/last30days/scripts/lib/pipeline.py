@@ -1787,14 +1787,21 @@ def diagnose(
     local_writes: list[dict[str, str]] = []
     if config.get("LAST30DAYS_MEMORY_DIR"):
         local_writes.append({"kind": "report", "path": str(config.get("LAST30DAYS_MEMORY_DIR"))})
+    # bird_authenticated reflects runtime auth truth: env AUTH_TOKEN OR pending
+    # browser-cookie auth. Do not publish a bare "false" when x_pending is true.
+    bird_authenticated = x_status["bird_authenticated"]
+    bird_username = x_status["bird_username"]
+    if not bird_authenticated and x_pending:
+        bird_authenticated = True
+        bird_username = "browser cookies (pending)"
     diag = {
         "providers": providers_status,
         "local_mode": not reasoning_provider_available,
         "reasoning_provider": (config.get("LAST30DAYS_REASONING_PROVIDER") or "auto").lower(),
         "x_backend": x_status["source"],
         "bird_installed": x_status["bird_installed"],
-        "bird_authenticated": x_status["bird_authenticated"],
-        "bird_username": x_status["bird_username"],
+        "bird_authenticated": bird_authenticated,
+        "bird_username": bird_username,
         "x_pending_browser_auth": x_pending,
         "xquik_available": x_status.get("xquik_available", False),
         "xquik_working": x_status.get("xquik_working"),
@@ -3287,6 +3294,11 @@ def _finalize_source_status(
             state = schema.NO_RESULTS
         elif state == schema.PARTIAL and not count:
             state = http.classify_failure(message=detail or "")
+        elif state == schema.AUTH_FAILED and count:
+            # Fallback succeeded: primary backend auth-failed but a later
+            # backend fully served the request. Not PARTIAL (incomplete
+            # retrieval) — this is OK with informational detail.
+            state = health.OK
         finalized[source] = schema.SourceOutcome(
             source=source,
             state=state,
@@ -4115,14 +4127,14 @@ def _retrieve_stream_impl(
                 if i > 0:
                     print(f"[X] primary backend(s) returned nothing; used fallback '{backend}'", file=sys.stderr)
                 if last_error:
-                    state = (
-                        bird_x.classify_run_failure(last_error)
-                        if last_error.startswith("bird:")
-                        else http.classify_failure(message=last_error)
-                    )
+                    # Fallback fully served items: the source is OK (not PARTIAL
+                    # or AUTH_FAILED). PARTIAL is for incomplete retrieval; a
+                    # backend that auth-failed then fell over to another backend
+                    # that returned all requested items is a success, not a
+                    # partial failure. Record as OK with an informational detail.
                     return items, _outcome_artifact(
-                        state,
-                        f"X fallback '{backend}' returned {len(items)} items after {last_error}",
+                        health.OK,
+                        f"X served via {backend} after {last_error}",
                     )
                 return items, {}
             if err:

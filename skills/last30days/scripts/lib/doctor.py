@@ -1389,21 +1389,40 @@ def _is_fresh(timestamp: Any, ttl_seconds: int) -> bool:
     return env.is_timestamp_fresh(timestamp, ttl_seconds)
 
 
+def _grok_cache_signal() -> Dict[str, str]:
+    """Non-secret grok auth signal for the cache fingerprint.
+
+    Includes auth_state (AUTH_OK/AUTH_EXPIRED/AUTH_MISSING/AUTH_ERROR) and
+    expires_at (ISO timestamp or "absent"). Neither is a credential value —
+    both can be logged safely. This ensures the cache invalidates when grok
+    status changes (e.g., auth.json deleted after a failed refresh).
+    """
+    from . import grok_x
+    status, _detail, expires_at = grok_x.stored_auth_status()
+    return {
+        "auth_state": status,
+        "expires_at": expires_at.isoformat() if expires_at else "absent",
+    }
+
+
 def _config_fingerprint(config: Dict[str, Any]) -> str:
     """sha256 over the non-secret config signals doctor already reports.
 
     Inputs are key-presence BOOLEANS (never credential values — the same
     ``keys_present`` set the setup block renders), backend pin values
-    (backend names, not secrets), and INCLUDE_SOURCES (not a secret).
-    Adding or removing a credential, changing a pin, or toggling an opt-in
-    source yields a new fingerprint, so ``read_cached_report`` treats the
-    old cache as stale instead of serving pre-change conclusions.
+    (backend names, not secrets), INCLUDE_SOURCES (not a secret), and the
+    grok auth state (status + expires_at, not the credential itself).
+    Adding or removing a credential, changing a pin, toggling an opt-in
+    source, or grok auth state changing yields a new fingerprint, so
+    ``read_cached_report`` treats the old cache as stale instead of serving
+    pre-change conclusions.
     """
     config = config or {}
     signals = {
         "keys_present": _setup_block(config)["keys_present"],
         "pins": {var: str(config.get(var) or "") for var in _FINGERPRINT_PIN_VARS},
         "include_sources": str(config.get("INCLUDE_SOURCES") or ""),
+        "grok": _grok_cache_signal(),
     }
     canonical = json.dumps(signals, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

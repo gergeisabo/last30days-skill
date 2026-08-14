@@ -363,6 +363,80 @@ def _brightdata_off_path_binary() -> Optional[str]:
     return None
 
 
+# The Bright Data CLI ships on npm rather than through the Printing Press
+# catalog, so it gets its own installer rather than a PP_DEFAULT_SOURCES entry.
+BRIGHTDATA_NPM = "@brightdata/cli"
+# Generous: npm resolves and downloads a package tree over the network.
+BRIGHTDATA_INSTALL_TIMEOUT = 300
+
+
+def _run_npm_global_install(package: str) -> Tuple[str, str]:
+    """Resolve ``npm`` and run a global install.
+
+    Returns ``(action, stderr)``: ``action`` is ``"no_npm"``,
+    ``"install_failed"``, or ``""`` when the subprocess ran and returned rc=0.
+
+    Passes the resolved npm path as argv[0] rather than the bare string, which
+    is the Windows PATHEXT fix ``_run_npx_install`` documents: ``shutil.which``
+    resolves ``npm.CMD`` via PATHEXT but ``subprocess.run`` given ``"npm"``
+    does not, and fails with WinError 2.
+    """
+    npm = shutil.which("npm")
+    if npm is None:
+        return "no_npm", ""
+    try:
+        proc = subprocess.run(
+            [npm, "install", "-g", package],
+            capture_output=True, text=True, timeout=BRIGHTDATA_INSTALL_TIMEOUT,
+        )
+    except Exception as exc:
+        logger.warning("npm install -g %s exception: %s", package, exc)
+        return "install_failed", str(exc)
+    if proc.returncode != 0:
+        stderr = proc.stderr or f"npm install -g {package} exited {proc.returncode}"
+        logger.warning("npm install -g %s failed (rc=%s): %s", package, proc.returncode, stderr)
+        return "install_failed", stderr
+    return "", (proc.stderr or "")
+
+
+def install_brightdata_cli() -> Tuple[bool, str, str, str]:
+    """Best-effort global install of the Bright Data CLI.
+
+    Structural mirror of ``_install_pp_cli`` with npm in place of the Printing
+    Press catalog installer, and the same action taxonomy (``no_npm`` replaces
+    ``no_npx``). Never raises.
+
+    The post-install re-verification is the point: npm's global prefix varies
+    per machine and per Node version manager, so a successful install whose
+    binary lands outside the agent subprocess PATH is ``installed_off_path``,
+    not ``installed``. Claiming otherwise would tell a Hermes or OpenClaw user
+    the lane is live when the engine gate cannot see the binary.
+
+    Returns ``(engine_active, action, stderr, off_path_binary)``.
+    """
+    if shutil.which(BRIGHTDATA_BIN):
+        return True, "already_installed", "", ""
+    off_path = _brightdata_off_path_binary()
+    if off_path:
+        return False, "installed_off_path", "", off_path
+
+    action, stderr = _run_npm_global_install(BRIGHTDATA_NPM)
+    if action:
+        return False, action, stderr, ""
+
+    if shutil.which(BRIGHTDATA_BIN):
+        return True, "installed", "", ""
+    off_path = _brightdata_off_path_binary()
+    if off_path:
+        combined = stderr.strip()
+        if combined:
+            logger.warning("%s installed off PATH: %s", BRIGHTDATA_BIN, combined)
+        return False, "installed_off_path", combined, off_path
+    stderr_msg = stderr or f"install completed but {BRIGHTDATA_BIN} was not found"
+    logger.warning("npm install %s failed verification: %s", BRIGHTDATA_NPM, stderr_msg)
+    return False, "install_failed", stderr_msg, ""
+
+
 def brightdata_status(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Report the Bright Data install and auth state honestly.
 

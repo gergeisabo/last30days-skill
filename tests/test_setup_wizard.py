@@ -919,3 +919,81 @@ class TestBrightDataSetupSurface:
     def test_absent_offers_the_install_command_without_running_it(self):
         text = self._text({"action": "not_installed", "engine_active": False})
         assert "npm i -g @brightdata/cli" in text
+
+
+class TestBrightDataInstaller:
+    """U1: never claim installed unless the engine gate would resolve it."""
+
+    def test_already_on_path_skips_the_install(self):
+        with patch.object(setup_wizard.shutil, "which", lambda n: "/usr/local/bin/brightdata"), \
+             patch.object(setup_wizard.subprocess, "run") as run:
+            active, action, stderr, off = setup_wizard.install_brightdata_cli()
+        assert (active, action) == (True, "already_installed")
+        run.assert_not_called()
+
+    def test_npm_absent_returns_no_npm_without_spawning(self):
+        with patch.object(setup_wizard.shutil, "which", lambda n: None), \
+             patch.object(setup_wizard, "_brightdata_off_path_binary", return_value=None), \
+             patch.object(setup_wizard.subprocess, "run") as run:
+            active, action, stderr, off = setup_wizard.install_brightdata_cli()
+        assert (active, action) == (False, "no_npm")
+        run.assert_not_called()
+
+    def test_successful_install_that_lands_on_path(self):
+        seen = {"calls": 0}
+
+        def which(name):
+            if name == "npm":
+                return "/usr/bin/npm"
+            seen["calls"] += 1
+            return None if seen["calls"] == 1 else "/usr/local/bin/brightdata"
+
+        with patch.object(setup_wizard.shutil, "which", which), \
+             patch.object(setup_wizard, "_brightdata_off_path_binary", return_value=None), \
+             patch.object(setup_wizard.subprocess, "run",
+                          return_value=MagicMock(returncode=0, stderr="")):
+            active, action, stderr, off = setup_wizard.install_brightdata_cli()
+        assert (active, action) == (True, "installed")
+
+    def test_install_succeeds_but_binary_lands_off_path(self):
+        """npm's global prefix varies; the engine gate is the arbiter."""
+        with patch.object(setup_wizard.shutil, "which",
+                          lambda n: "/usr/bin/npm" if n == "npm" else None), \
+             patch.object(setup_wizard, "_brightdata_off_path_binary",
+                          side_effect=[None, "/Users/x/.npm-global/bin/brightdata"]), \
+             patch.object(setup_wizard.subprocess, "run",
+                          return_value=MagicMock(returncode=0, stderr="")):
+            active, action, stderr, off = setup_wizard.install_brightdata_cli()
+        assert (active, action) == (False, "installed_off_path")
+        assert off == "/Users/x/.npm-global/bin/brightdata"
+
+    def test_nonzero_exit_reports_install_failed_with_stderr(self):
+        with patch.object(setup_wizard.shutil, "which",
+                          lambda n: "/usr/bin/npm" if n == "npm" else None), \
+             patch.object(setup_wizard, "_brightdata_off_path_binary", return_value=None), \
+             patch.object(setup_wizard.subprocess, "run",
+                          return_value=MagicMock(returncode=1, stderr="EACCES: permission denied")):
+            active, action, stderr, off = setup_wizard.install_brightdata_cli()
+        assert (active, action) == (False, "install_failed")
+        assert "EACCES" in stderr
+
+    def test_install_timeout_never_raises(self):
+        with patch.object(setup_wizard.shutil, "which",
+                          lambda n: "/usr/bin/npm" if n == "npm" else None), \
+             patch.object(setup_wizard, "_brightdata_off_path_binary", return_value=None), \
+             patch.object(setup_wizard.subprocess, "run",
+                          side_effect=subprocess.TimeoutExpired("npm", 300)):
+            active, action, stderr, off = setup_wizard.install_brightdata_cli()
+        assert (active, action) == (False, "install_failed")
+
+    def test_npm_path_is_resolved_not_bare(self):
+        """Windows PATHEXT: bare 'npm' as argv[0] fails with WinError 2."""
+        captured = {}
+        with patch.object(setup_wizard.shutil, "which",
+                          lambda n: "/usr/bin/npm" if n == "npm" else None), \
+             patch.object(setup_wizard, "_brightdata_off_path_binary", return_value=None), \
+             patch.object(setup_wizard.subprocess, "run",
+                          side_effect=lambda cmd, **k: captured.update(cmd=cmd) or MagicMock(returncode=0, stderr="")):
+            setup_wizard.install_brightdata_cli()
+        assert captured["cmd"][0] == "/usr/bin/npm"
+        assert captured["cmd"][1:] == ["install", "-g", "@brightdata/cli"]

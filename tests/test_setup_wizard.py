@@ -1015,6 +1015,7 @@ class TestBrightDataRegistration:
     def _patch(self, *, gh=True, gh_authed=True, install=("installed", True), login=None):
         active, action = install[1], install[0]
         return [
+            patch.object(setup_wizard.brightdata, "is_available", return_value=False),
             patch.object(setup_wizard.shutil, "which",
                          lambda n: "/usr/bin/gh" if n == "gh" else "/usr/bin/npm"
                          if n == "npm" else None) if gh else
@@ -1056,7 +1057,7 @@ class TestBrightDataRegistration:
 
     def test_off_path_install_blocks_and_names_path(self):
         patches = self._patch()
-        patches[2] = patch.object(
+        patches[3] = patch.object(
             setup_wizard, "install_brightdata_cli",
             return_value=(False, "installed_off_path", "", "/Users/x/.npm-global/bin/brightdata"),
         )
@@ -1083,7 +1084,7 @@ class TestBrightDataRegistration:
 
     def test_nothing_raises_on_login_exception(self):
         patches = self._patch()
-        patches[3] = patch.object(setup_wizard, "_brightdata_login_github",
+        patches[4] = patch.object(setup_wizard, "_brightdata_login_github",
                                   side_effect=RuntimeError("boom"))
         for p in patches: p.start()
         try:
@@ -1103,11 +1104,13 @@ class TestBrightDataRegistration:
 class TestBrightDataLoginExitCode:
     """Regression: the CLI exits 0 on a FAILED GitHub auth (verified v0.3.3)."""
 
-    def _login(self, rc=0, stdout="", stderr=""):
+    def _login(self, rc=0, stdout="", stderr="", credentialed=False):
         with patch.object(setup_wizard.shutil, "which", lambda n: "/usr/local/bin/brightdata"), \
              patch.object(setup_wizard.subprocess, "run",
                           return_value=MagicMock(returncode=rc, stdout=stdout, stderr=stderr)):
-            return setup_wizard._brightdata_login_github()
+            return setup_wizard._brightdata_login_github(
+                credentialed=lambda: credentialed
+            )
 
     def test_rc_zero_with_403_is_a_failure_not_a_success(self):
         out = self._login(rc=0, stderr=(
@@ -1121,8 +1124,15 @@ class TestBrightDataLoginExitCode:
         """The prompt only appears after auth failed."""
         assert self._login(rc=0, stdout="Try device flow instead? [y/N]")["ok"] is False
 
-    def test_clean_rc_zero_is_a_success(self):
-        assert self._login(rc=0, stdout="Logged in.")["ok"] is True
+    def test_success_requires_a_credential_not_just_clean_output(self):
+        """Success is a positive post-condition, never absence of a marker."""
+        assert self._login(rc=0, stdout="Logged in.", credentialed=True)["ok"] is True
+
+    def test_clean_output_without_a_credential_is_a_failure(self):
+        """The dangerous direction: unmatched failure wording reading as success."""
+        out = self._login(rc=0, stdout="Could not verify your GitHub account (Forbidden)")
+        assert out["ok"] is False
+        assert "no Bright Data credentials were written" in out["error"] or out["error"]
 
     def test_nonzero_rc_is_a_failure(self):
         assert self._login(rc=1, stderr="boom")["ok"] is False
@@ -1135,3 +1145,31 @@ class TestBrightDataLoginExitCode:
                               returncode=0, stdout="", stderr="")):
             setup_wizard._brightdata_login_github()
         assert captured["stdin"] == subprocess.DEVNULL
+
+
+class TestSetConfigValueUpsert:
+    """A toggle must replace, not append-if-absent."""
+
+    def test_replaces_an_existing_value(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text("FOO=1\nLAST30DAYS_AMAZON_ENABLED=0\nBAR=2\n")
+        assert setup_wizard.set_config_value(env, "LAST30DAYS_AMAZON_ENABLED", "1") is True
+        text = env.read_text()
+        assert "LAST30DAYS_AMAZON_ENABLED=1" in text
+        assert "LAST30DAYS_AMAZON_ENABLED=0" not in text
+        assert "FOO=1" in text and "BAR=2" in text
+
+    def test_appends_when_absent(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text("FOO=1\n")
+        assert setup_wizard.set_config_value(env, "LAST30DAYS_AMAZON_ENABLED", "1") is True
+        assert "LAST30DAYS_AMAZON_ENABLED=1" in env.read_text()
+
+    def test_preserves_0600(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text("FOO=1\n")
+        setup_wizard.set_config_value(env, "K", "v")
+        assert oct(env.stat().st_mode)[-3:] == "600"
+
+    def test_none_path_returns_false_without_raising(self):
+        assert setup_wizard.set_config_value(None, "K", "v") is False

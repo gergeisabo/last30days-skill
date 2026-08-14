@@ -388,6 +388,9 @@ def _run_npm_global_install(package: str) -> Tuple[str, str]:
         proc = subprocess.run(
             [npm, "install", "-g", package],
             capture_output=True, text=True, timeout=BRIGHTDATA_INSTALL_TIMEOUT,
+            # Same reason as the login call: an npm prompt would otherwise
+            # consume the agent session's stdin and stall until the timeout.
+            stdin=subprocess.DEVNULL,
         )
     except Exception as exc:
         logger.warning("npm install -g %s exception: %s", package, exc)
@@ -437,6 +440,15 @@ def install_brightdata_cli() -> Tuple[bool, str, str, str]:
     return False, "install_failed", stderr_msg, ""
 
 
+# Vendor output is relayed verbatim to the user, and an auth-failure line is
+# exactly where a CLI is most likely to echo the credential it was handed.
+_SECRET_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,})|(Bearer\s+\S+)", re.IGNORECASE)
+
+
+def _scrub_secrets(text: str) -> str:
+    return _SECRET_RE.sub("***", text or "")
+
+
 # Markers for a failed login that the CLI nonetheless exits 0 on. Kept broad
 # rather than pinned to one message, since the CLI is young and its wording
 # moves; a false "failed" degrades to today's behavior, while a false
@@ -458,13 +470,19 @@ def _gh_authenticated() -> bool:
     if gh is None:
         return False
     try:
-        proc = subprocess.run([gh, "auth", "status"], capture_output=True, text=True, timeout=20)
+        # --hostname pins github.com: a user authenticated only to a GitHub
+        # Enterprise host would otherwise pass here and fail later at login,
+        # reporting the wrong first-failing prerequisite.
+        proc = subprocess.run(
+            [gh, "auth", "status", "--hostname", "github.com"],
+            capture_output=True, text=True, timeout=20,
+        )
     except Exception:
         return False
     return proc.returncode == 0
 
 
-def _brightdata_login_github(timeout: int = 120) -> Dict[str, Any]:
+def _brightdata_login_github(timeout: int = 120, credentialed=None) -> Dict[str, Any]:
     """Run ``brightdata login --github``. Never raises.
 
     Returns ``{"ok": bool, "error": str}``. The CLI performs a gist-based
@@ -487,22 +505,37 @@ def _brightdata_login_github(timeout: int = 120) -> Dict[str, Any]:
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
-    # Exit code alone is NOT sufficient: this CLI exits 0 on a failed GitHub
-    # auth, because it treats the failure as handled once it has offered the
-    # device-flow fallback. Verified live against v0.3.3 -- a 403 verification
-    # failure returns rc=0. Trusting rc here would report success to every
-    # user whose registration silently did not happen.
-    combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+    # Success is a POSITIVE post-condition, never the absence of a failure
+    # marker. Two reasons this matters:
+    #
+    #   1. This CLI exits 0 on a failed GitHub auth -- verified live against
+    #      v0.3.3, where a 403 verification failure returns rc=0 because the
+    #      CLI treats the failure as handled once it has offered the
+    #      device-flow fallback.
+    #   2. Matching failure *wording* is unfixably fragile. Any phrasing the
+    #      pattern misses ("Forbidden", "Bad credentials", "could not verify")
+    #      would be read as success, and the failure direction that matters is
+    #      exactly that one: reporting a registered account for a dark lane.
+    #
+    # So the authority is the credential the CLI is supposed to have written.
+    # If it is not there, registration did not happen, whatever was printed.
+    combined = _scrub_secrets(f"{proc.stdout or ''}\n{proc.stderr or ''}")
+    if credentialed is not None and credentialed():
+        return {"ok": True}
+
     failure_lines = [
         ln.strip() for ln in combined.splitlines()
         if ln.strip() and _AUTH_FAILURE_RE.search(ln)
     ]
-    if proc.returncode != 0 or failure_lines:
-        if failure_lines:
-            return {"ok": False, "error": failure_lines[0]}
-        lines = [ln.strip() for ln in (proc.stderr or "").strip().splitlines() if ln.strip()]
-        return {"ok": False, "error": lines[-1] if lines else f"exit {proc.returncode}"}
-    return {"ok": True}
+    if failure_lines:
+        return {"ok": False, "error": failure_lines[0]}
+    lines = [ln.strip() for ln in _scrub_secrets(proc.stderr or "").strip().splitlines() if ln.strip()]
+    if lines:
+        return {"ok": False, "error": lines[-1]}
+    return {
+        "ok": False,
+        "error": f"login exited {proc.returncode} but no Bright Data credentials were written",
+    }
 
 
 # Ordered prerequisite chain. Reporting the *first* failure matters: a user
@@ -542,6 +575,16 @@ def register_brightdata(config: Optional[Dict[str, Any]] = None) -> Dict[str, An
         out.update(extra)
         return out
 
+    # Already registered? Do nothing. Re-running login would create a gist and
+    # REPLACE an existing credentials file -- a user who had logged into their
+    # employer's paid Bright Data account would silently be swapped onto a new
+    # free one, and later Amazon pulls would bill the wrong account. This also
+    # covers the user who installed and logged in by hand but has no gh: they
+    # still get the activation key without being blocked on a prerequisite the
+    # zero-click path needs and they do not.
+    if brightdata.is_available(config):
+        return {"ok": True, "registered": True, "action": "already_registered"}
+
     if shutil.which("gh") is None:
         return blocked("gh_missing")
     if not _gh_authenticated():
@@ -561,7 +604,9 @@ def register_brightdata(config: Optional[Dict[str, Any]] = None) -> Dict[str, An
         return blocked("install_failed", **({"error": stderr} if stderr else {}))
 
     try:
-        login = _brightdata_login_github()
+        login = _brightdata_login_github(
+            credentialed=lambda: brightdata.has_credentials(config)
+        )
     except Exception as exc:  # defensive: the helper already never raises
         return blocked("registration_failed", error=str(exc))
     if not login.get("ok"):
@@ -787,6 +832,48 @@ def write_setup_config(env_path: Path, from_browser: str | None = None) -> bool:
     except OSError as exc:
         logger.error("Failed to write setup config to %s: %s", env_path, exc)
         return False
+
+
+def set_config_value(env_path: Path, key_name: str, value: str) -> bool:
+    """Upsert ``key_name=value`` in the .env file as a 0o600 secret.
+
+    ``write_api_key`` is deliberately append-if-absent so it never clobbers a
+    key the user set by hand. That is wrong for a toggle: a user who set
+    ``LAST30DAYS_AMAZON_ENABLED=0`` to go back to opt-in, then re-registered,
+    would get ``persisted: true`` while the value stayed ``0`` and the source
+    stayed off. This one replaces an existing value.
+    """
+    try:
+        path = Path(env_path)
+    except TypeError:
+        return False
+    try:
+        existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    except OSError:
+        return False
+
+    line = f"{key_name}={value}"
+    out, replaced = [], False
+    for entry in existing:
+        if entry.strip().startswith(f"{key_name}="):
+            if not replaced:
+                out.append(line)
+                replaced = True
+            continue
+        out.append(entry)
+    if not replaced:
+        out.append(line)
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _open_secret_append(path.with_suffix(".tmp")) as handle:
+            handle.write("\n".join(out) + "\n")
+        path.with_suffix(".tmp").replace(path)
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        logger.warning("failed to write %s: %s", key_name, exc)
+        return False
+    return True
 
 
 def write_api_key(env_path: Path, api_key: str, key_name: str = "SCRAPECREATORS_API_KEY") -> bool:

@@ -2884,9 +2884,21 @@ def _main(
             # without the user editing INCLUDE_SOURCES.
             results = setup_wizard.register_brightdata(config)
             if results.get("registered"):
-                results["persisted"] = setup_wizard.write_api_key(
-                    env.CONFIG_FILE, "1", key_name="LAST30DAYS_AMAZON_ENABLED",
-                )
+                # env.CONFIG_FILE is None in no-config mode
+                # (LAST30DAYS_CONFIG_DIR=""), where write_api_key would raise a
+                # TypeError *after* the CLI is installed and the account is
+                # created. Report honestly instead of crashing past the point
+                # of no return.
+                if env.CONFIG_FILE is None:
+                    results["persisted"] = False
+                    results["persist_error"] = (
+                        "no config file in no-config mode; set INCLUDE_SOURCES=amazon "
+                        "to enable the source"
+                    )
+                else:
+                    results["persisted"] = setup_wizard.set_config_value(
+                        env.CONFIG_FILE, "LAST30DAYS_AMAZON_ENABLED", "1",
+                    )
             print(json.dumps(results))
             return 0
         if any(f in extra_argv for f in ("--github", "--device-auth", "--github-start", "--github-poll")):

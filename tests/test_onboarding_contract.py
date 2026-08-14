@@ -376,6 +376,18 @@ class BrightDataOfferContract(unittest.TestCase):
                 f"{name} branch does not state the decline path is inert",
             )
 
+    def test_global_npm_install_is_disclosed_at_acceptance(self):
+        """A global package landing on the machine is part of what is consented to."""
+        for name, branch in (("modal", self.modal), ("prose", self.prose)):
+            self.assertIn("npm i -g @brightdata/cli", branch,
+                          f"{name} branch does not disclose the global install")
+
+    def test_persisted_false_has_its_own_branch(self):
+        """Registration succeeding while the setting fails to save is not success."""
+        for name, branch in (("modal", self.modal), ("prose", self.prose)):
+            self.assertIn('"persisted": false', branch,
+                          f"{name} branch has no persisted:false handling")
+
     def test_failure_states_must_not_claim_the_source_is_active(self):
         self.assertIn("registration_failed", self.modal)
         self.assertIn("registration_failed", self.prose)

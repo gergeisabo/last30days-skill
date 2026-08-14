@@ -3134,7 +3134,16 @@ def _classify_source_failure(exc: Exception) -> tuple[schema.RunOutcomeState, bo
         return schema.SKIPPED_UNCONFIGURED, False
     if any(
         marker in lowered
-        for marker in ("cookie expired", "expired cookie", "login required", "not logged in")
+        for marker in (
+            "cookie expired",
+            "expired cookie",
+            "login required",
+            "not logged in",
+            "grok session expired",
+            "session expired or was revoked",
+            "invalid_grant",
+            "not signed in",
+        )
     ):
         return schema.AUTH_FAILED, True
     state = getattr(exc, "outcome_state", None) or http.classify_failure(
@@ -3815,6 +3824,10 @@ def _fetch_x_backend(backend, subquery, from_date, to_date, depth, config):
     Backends are tried in priority order by the caller (env.x_backend_chain);
     a non-empty error_str signals a hard failure (auth/payment/etc.) so the
     caller can fail over to the next backend or surface the error honestly.
+
+    For grok, auth_revoked signals mid-run session revocation: the error
+    string includes "grok session expired" so _classify_source_failure maps
+    it to AUTH_FAILED with a proper fix hint, distinct from "never signed in".
     """
     query = subquery.search_query
     if backend == "bird":
@@ -3823,6 +3836,9 @@ def _fetch_x_backend(backend, subquery, from_date, to_date, depth, config):
     elif backend == "grok":
         result = grok_x.search_x(query, from_date, to_date, depth=depth)
         items = result.get("items", []) if isinstance(result, dict) else []
+        if isinstance(result, dict) and result.get("auth_revoked"):
+            err = result.get("error") or "grok session expired or was revoked"
+            return items, f"grok: {err}"
     elif backend == "xai":
         model = config.get("LAST30DAYS_X_MODEL") or config.get("XAI_MODEL_PIN") or providers.XAI_DEFAULT
         result = xai_x.search_x(config["XAI_API_KEY"], model, query, from_date, to_date, depth=depth)

@@ -1,5 +1,6 @@
 """Tests for the first-run setup wizard module."""
 
+import json
 import os
 import subprocess
 import tempfile
@@ -997,3 +998,131 @@ class TestBrightDataInstaller:
             setup_wizard.install_brightdata_cli()
         assert captured["cmd"][0] == "/usr/bin/npm"
         assert captured["cmd"][1:] == ["install", "-g", "@brightdata/cli"]
+
+
+class TestBrightDataRegistration:
+    """U2: prerequisite ordering, honest degradation, no token leakage."""
+
+    def _patch(self, *, gh=True, gh_authed=True, install=("installed", True), login=None):
+        active, action = install[1], install[0]
+        return [
+            patch.object(setup_wizard.shutil, "which",
+                         lambda n: "/usr/bin/gh" if n == "gh" else "/usr/bin/npm"
+                         if n == "npm" else None) if gh else
+            patch.object(setup_wizard.shutil, "which",
+                         lambda n: None if n == "gh" else "/usr/bin/npm"),
+            patch.object(setup_wizard, "_gh_authenticated", return_value=gh_authed),
+            patch.object(setup_wizard, "install_brightdata_cli",
+                         return_value=(active, action, "", "")),
+            patch.object(setup_wizard, "_brightdata_login_github",
+                         return_value=login or {"ok": True}),
+        ]
+
+    def _run(self, **kw):
+        patches = self._patch(**kw)
+        for p in patches: p.start()
+        try:
+            return setup_wizard.register_brightdata({})
+        finally:
+            for p in patches: p.stop()
+
+    def test_missing_gh_reports_gh_not_npm(self):
+        """The first failing prerequisite wins; do not report a later one."""
+        out = self._run(gh=False)
+        assert out["ok"] is False
+        assert out["blocked_on"] == "gh_missing"
+        assert "gh" in out["hint"]
+        assert "npm" not in out["hint"].lower()
+
+    def test_gh_present_but_unauthenticated_reports_auth(self):
+        out = self._run(gh_authed=False)
+        assert out["ok"] is False
+        assert out["blocked_on"] == "gh_unauthenticated"
+        assert "gh auth login" in out["hint"]
+
+    def test_install_failure_blocks_before_login(self):
+        out = self._run(install=("install_failed", False))
+        assert out["ok"] is False
+        assert out["blocked_on"] == "install_failed"
+
+    def test_off_path_install_blocks_and_names_path(self):
+        patches = self._patch()
+        patches[2] = patch.object(
+            setup_wizard, "install_brightdata_cli",
+            return_value=(False, "installed_off_path", "", "/Users/x/.npm-global/bin/brightdata"),
+        )
+        for p in patches: p.start()
+        try:
+            out = setup_wizard.register_brightdata({})
+        finally:
+            for p in patches: p.stop()
+        assert out["blocked_on"] == "installed_off_path"
+        assert "/Users/x/.npm-global/bin/brightdata" in out["hint"]
+
+    def test_happy_path_reports_registered(self):
+        out = self._run()
+        assert out["ok"] is True
+        assert out["registered"] is True
+
+    def test_login_403_passes_the_cli_message_through_verbatim(self):
+        """Their verification failure is theirs to explain, not ours to reword."""
+        msg = "GitHub verification failed (HTTP 403): verification_failed Gist content does not match expected nonce"
+        out = self._run(login={"ok": False, "error": msg})
+        assert out["ok"] is False
+        assert out["blocked_on"] == "registration_failed"
+        assert out["error"] == msg
+
+    def test_nothing_raises_on_login_exception(self):
+        patches = self._patch()
+        patches[3] = patch.object(setup_wizard, "_brightdata_login_github",
+                                  side_effect=RuntimeError("boom"))
+        for p in patches: p.start()
+        try:
+            out = setup_wizard.register_brightdata({})
+        finally:
+            for p in patches: p.stop()
+        assert out["ok"] is False
+
+    def test_github_token_never_appears_in_the_outcome(self):
+        """The CLI reads the token itself; our code must never carry it."""
+        out = self._run()
+        blob = json.dumps(out)
+        assert "gho_" not in blob and "ghp_" not in blob
+        assert "token" not in blob.lower()
+
+
+class TestBrightDataLoginExitCode:
+    """Regression: the CLI exits 0 on a FAILED GitHub auth (verified v0.3.3)."""
+
+    def _login(self, rc=0, stdout="", stderr=""):
+        with patch.object(setup_wizard.shutil, "which", lambda n: "/usr/local/bin/brightdata"), \
+             patch.object(setup_wizard.subprocess, "run",
+                          return_value=MagicMock(returncode=rc, stdout=stdout, stderr=stderr)):
+            return setup_wizard._brightdata_login_github()
+
+    def test_rc_zero_with_403_is_a_failure_not_a_success(self):
+        out = self._login(rc=0, stderr=(
+            "GitHub auth failed: GitHub verification failed (HTTP 403): "
+            "verification_failed Gist content does not match expected nonce"
+        ))
+        assert out["ok"] is False
+        assert "403" in out["error"]
+
+    def test_rc_zero_with_the_device_flow_prompt_is_a_failure(self):
+        """The prompt only appears after auth failed."""
+        assert self._login(rc=0, stdout="Try device flow instead? [y/N]")["ok"] is False
+
+    def test_clean_rc_zero_is_a_success(self):
+        assert self._login(rc=0, stdout="Logged in.")["ok"] is True
+
+    def test_nonzero_rc_is_a_failure(self):
+        assert self._login(rc=1, stderr="boom")["ok"] is False
+
+    def test_stdin_is_closed_so_the_prompt_cannot_hang(self):
+        captured = {}
+        with patch.object(setup_wizard.shutil, "which", lambda n: "/usr/local/bin/brightdata"), \
+             patch.object(setup_wizard.subprocess, "run",
+                          side_effect=lambda cmd, **k: captured.update(k) or MagicMock(
+                              returncode=0, stdout="", stderr="")):
+            setup_wizard._brightdata_login_github()
+        assert captured["stdin"] == subprocess.DEVNULL

@@ -2445,6 +2445,7 @@ SETUP_PASSTHROUGH_FLAGS = {
     "--github",
     "--github-start",
     "--github-poll",
+    "--brightdata",
     "--openclaw",
 }
 
@@ -2873,6 +2874,19 @@ def _main(
         from lib import setup_wizard
         if "--openclaw" in extra_argv:
             results = setup_wizard.run_openclaw_setup(config)
+            print(json.dumps(results))
+            return 0
+        if "--brightdata" in extra_argv:
+            # Mechanical only: install the CLI, then register via the local gh
+            # token. Consent was obtained by the model in SKILL.md Step 0 --
+            # this subprocess cannot prompt. On success the activation key
+            # persists so the amazon source is available on the next run
+            # without the user editing INCLUDE_SOURCES.
+            results = setup_wizard.register_brightdata(config)
+            if results.get("registered"):
+                results["persisted"] = setup_wizard.write_api_key(
+                    env.CONFIG_FILE, "1", key_name="LAST30DAYS_AMAZON_ENABLED",
+                )
             print(json.dumps(results))
             return 0
         if any(f in extra_argv for f in ("--github", "--device-auth", "--github-start", "--github-poll")):

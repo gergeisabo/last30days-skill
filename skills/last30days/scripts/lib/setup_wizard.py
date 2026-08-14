@@ -437,6 +437,139 @@ def install_brightdata_cli() -> Tuple[bool, str, str, str]:
     return False, "install_failed", stderr_msg, ""
 
 
+# Markers for a failed login that the CLI nonetheless exits 0 on. Kept broad
+# rather than pinned to one message, since the CLI is young and its wording
+# moves; a false "failed" degrades to today's behavior, while a false
+# "succeeded" would tell the user a dark lane is live.
+_AUTH_FAILURE_RE = re.compile(
+    r"auth failed|verification failed|unauthorized|\b401\b|\b403\b|device flow instead",
+    re.IGNORECASE,
+)
+
+
+def _gh_authenticated() -> bool:
+    """True when the local GitHub CLI holds a usable token.
+
+    Checked with ``gh auth status`` rather than by reading the token: the
+    Bright Data CLI reads it from the local ``gh`` install itself, so this
+    process never needs to see it and must not.
+    """
+    gh = shutil.which("gh")
+    if gh is None:
+        return False
+    try:
+        proc = subprocess.run([gh, "auth", "status"], capture_output=True, text=True, timeout=20)
+    except Exception:
+        return False
+    return proc.returncode == 0
+
+
+def _brightdata_login_github(timeout: int = 120) -> Dict[str, Any]:
+    """Run ``brightdata login --github``. Never raises.
+
+    Returns ``{"ok": bool, "error": str}``. The CLI performs a gist-based
+    proof-of-GitHub-account-control handshake and stores the resulting API key
+    in its own credentials file; nothing about the exchange passes through
+    this process, which is why no token or key appears in the return value.
+    """
+    binary = shutil.which(BRIGHTDATA_BIN)
+    if binary is None:
+        return {"ok": False, "error": f"{BRIGHTDATA_BIN} not on PATH"}
+    try:
+        proc = subprocess.run(
+            [binary, "login", "--github"],
+            capture_output=True, text=True, timeout=timeout,
+            # The CLI offers an interactive "Try device flow instead? [y/N]"
+            # prompt when GitHub auth fails. Closing stdin makes it decline and
+            # exit rather than waiting on input that will never arrive.
+            stdin=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+    # Exit code alone is NOT sufficient: this CLI exits 0 on a failed GitHub
+    # auth, because it treats the failure as handled once it has offered the
+    # device-flow fallback. Verified live against v0.3.3 -- a 403 verification
+    # failure returns rc=0. Trusting rc here would report success to every
+    # user whose registration silently did not happen.
+    combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+    failure_lines = [
+        ln.strip() for ln in combined.splitlines()
+        if ln.strip() and _AUTH_FAILURE_RE.search(ln)
+    ]
+    if proc.returncode != 0 or failure_lines:
+        if failure_lines:
+            return {"ok": False, "error": failure_lines[0]}
+        lines = [ln.strip() for ln in (proc.stderr or "").strip().splitlines() if ln.strip()]
+        return {"ok": False, "error": lines[-1] if lines else f"exit {proc.returncode}"}
+    return {"ok": True}
+
+
+# Ordered prerequisite chain. Reporting the *first* failure matters: a user
+# without gh should be told about gh, not about npm they also happen to lack.
+_REGISTRATION_HINTS = {
+    "gh_missing": (
+        "the zero-click path needs the GitHub CLI - install it from https://cli.github.com/ "
+        "then run `gh auth login`"
+    ),
+    "gh_unauthenticated": "run `gh auth login` to authenticate the GitHub CLI",
+    "no_npm": "npm is required to install the Bright Data CLI",
+    "install_failed": "the Bright Data CLI could not be installed",
+    "registration_failed": "Bright Data rejected the GitHub verification",
+}
+
+
+def register_brightdata(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Install the Bright Data CLI and register via GitHub, mechanically.
+
+    Does only mechanical work and returns a structured outcome; the model owns
+    every user-facing sentence, per the established split where the setup
+    subprocess cannot prompt.
+
+    Deliberately has no fallback to Bright Data's ``--device`` flow. That flow
+    works, but it requires visiting a URL and entering a code -- exactly the
+    experience this path exists to remove. When ``gh`` is absent we say so
+    rather than silently delivering the web flow the user was told they would
+    not see.
+
+    Never handles the GitHub token: ``gh`` holds it, the Bright Data CLI reads
+    it, and neither the token nor the resulting API key appears in the return
+    value or in any log line.
+    """
+    def blocked(reason: str, **extra: Any) -> Dict[str, Any]:
+        out = {"ok": False, "registered": False, "blocked_on": reason,
+               "hint": _REGISTRATION_HINTS.get(reason, "")}
+        out.update(extra)
+        return out
+
+    if shutil.which("gh") is None:
+        return blocked("gh_missing")
+    if not _gh_authenticated():
+        return blocked("gh_unauthenticated")
+
+    active, action, stderr, off_path = install_brightdata_cli()
+    if action == "no_npm":
+        return blocked("no_npm")
+    if action == "installed_off_path":
+        hint = (
+            f"the Bright Data CLI is at {off_path} but not on PATH - add "
+            f"{os.path.dirname(os.path.expanduser(off_path))} to PATH and restart "
+            "your agent session/gateway"
+        )
+        return blocked("installed_off_path", path=off_path, hint=hint)
+    if not active:
+        return blocked("install_failed", **({"error": stderr} if stderr else {}))
+
+    try:
+        login = _brightdata_login_github()
+    except Exception as exc:  # defensive: the helper already never raises
+        return blocked("registration_failed", error=str(exc))
+    if not login.get("ok"):
+        return blocked("registration_failed", error=login.get("error", ""))
+
+    return {"ok": True, "registered": True, "action": action}
+
+
 def brightdata_status(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Report the Bright Data install and auth state honestly.
 

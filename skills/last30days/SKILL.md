@@ -704,6 +704,7 @@ The magic of /last30days is Reddit comments + X posts together - and both are fr
 **Other optional sources (add anytime):**
 - `PERPLEXITY_API_KEY=xxx` (or `OPENROUTER_API_KEY=xxx`) - AI-synthesized research with citations; set `INCLUDE_SOURCES=perplexity`.
 - `XIAOHONGSHU_API_BASE=http://localhost:18060` - Xiaohongshu/RED via a logged-in x-mcp browser plugin or `xiaohongshu-mcp` service; optional unless the local service runs on a custom URL. Opt in per run with `--search xhs`, or persistently via `INCLUDE_SOURCES=xiaohongshu`.
+- `APIFY_API_TOKEN` unlocks four paid per-item Apify sources (opt-in via `INCLUDE_SOURCES=facebook,bilibili,xueqiu,xiaohongshu`): **facebook** (keyword search, ~$0.0025/item), **bilibili** (video search with Chinese auto-localization, $0.02/item — caps stay tight), **xueqiu** (trending Chinese investor posts, $0.005/post; cookie-needing modes deliberately unused), **xiaohongshu** (keyword search, $0.005/item — used automatically as the default backend when no local XHS API runs). **v2ex** is free (public topics API, always on, keyword-filtered engine-side to stay quiet off-topic).
 - DripStack (premium financial newsletter search) is opt-in only: per run with `--search dripstack`, or persistently via `INCLUDE_SOURCES=dripstack`. Free public search API, no key; never active without the opt-in.
 - `BSKY_HANDLE=you.bsky.social` + `BSKY_APP_PASSWORD=xxx` - Bluesky (free app password).
 - `BRAVE_API_KEY=xxx` or `EXA_API_KEY=xxx` - web search backends.
@@ -761,7 +762,7 @@ SKILL_DIR="<absolute path of the directory containing the SKILL.md you just Read
 "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --diagnose
 ```
 
-`--diagnose` prints JSON. `ACTIVE_SOURCES_LIST` is its `available_sources` array — the engine's authoritative source set, computed after credential resolution. Map the tokens to display names: `reddit`→Reddit, `hackernews`→Hacker News, `polymarket`→Polymarket, `github`→GitHub, `digg`→Digg, `x`→X, `youtube`→YouTube, `tiktok`→TikTok, `instagram`→Instagram, `threads`→Threads, `pinterest`→Pinterest, `linkedin`→LinkedIn, `bluesky`→Bluesky, `perplexity`→Perplexity, `grounding`→Web, `jobs`→Jobs, `corpus`→Your files, `dripstack`→DripStack.
+`--diagnose` prints JSON. `ACTIVE_SOURCES_LIST` is its `available_sources` array — the engine's authoritative source set, computed after credential resolution. Map the tokens to display names: `reddit`→Reddit, `hackernews`→Hacker News, `polymarket`→Polymarket, `github`→GitHub, `digg`→Digg, `x`→X, `youtube`→YouTube, `tiktok`→TikTok, `instagram`→Instagram, `threads`→Threads, `pinterest`→Pinterest, `linkedin`→LinkedIn, `bluesky`→Bluesky, `perplexity`→Perplexity, `grounding`→Web, `jobs`→Jobs, `corpus`→Your files, `dripstack`→DripStack, `facebook`→Facebook, `bilibili`→Bilibili, `xueqiu`→Xueqiu, `v2ex`→V2EX.
 
 - If EXCLUDE_SOURCES is set (comma-separated, case-insensitive): drop any matching source from ACTIVE_SOURCES_LIST before displaying
 

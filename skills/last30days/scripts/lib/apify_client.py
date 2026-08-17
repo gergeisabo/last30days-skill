@@ -4,6 +4,10 @@ Runs an actor synchronously (run-sync-get-dataset-items endpoint) with a hard
 wall-clock timeout and returns at most ``item_cap`` items. All paid platforms
 route through here so caps and timeouts live in exactly one place.
 
+A per-run item budget prevents cost blowup across multi-subquery plans:
+once ``MAX_ITEMS_PER_RUN`` items have been fetched, subsequent calls return
+empty. Call ``reset_budget()`` at the start of each pipeline run.
+
 Env: APIFY_API_TOKEN (read by caller, passed in — never imported here).
 """
 
@@ -15,7 +19,21 @@ import urllib.request
 
 API_BASE = "https://api.apify.com/v2"
 DEFAULT_TIMEOUT = 120  # seconds, run-sync overall budget
-POLL_BACKOFF = 3.0  # base seconds between status polls (exponential-ish)
+MAX_ITEMS_PER_RUN = 60  # hard cap across all Apify sources per run
+
+# Per-run budget tracking (resets at pipeline run start).
+_run_items_used: int = 0
+
+
+def reset_budget() -> None:
+    """Reset the per-run item counter. Call at the start of each pipeline run."""
+    global _run_items_used
+    _run_items_used = 0
+
+
+def remaining_budget() -> int:
+    """Items remaining in the current run's budget."""
+    return max(0, MAX_ITEMS_PER_RUN - _run_items_used)
 
 
 class ApifyError(RuntimeError):
@@ -40,6 +58,13 @@ def run_sync(
         raise ApifyError("missing APIFY_API_TOKEN")
     if item_cap <= 0:
         return []
+
+    # Per-run budget guard: cap items to remaining budget.
+    global _run_items_used
+    remaining = MAX_ITEMS_PER_RUN - _run_items_used
+    if remaining <= 0:
+        return []
+    item_cap = min(item_cap, remaining)
 
     # API v2 wants actor IDs as username~name (tilde), not username/name.
     actor_id = urllib.parse.quote(actor.replace("/", "~"), safe="~")
@@ -85,4 +110,6 @@ def run_sync(
             items = [items] if items else []
     if not isinstance(items, list):
         items = [items] if items else []
-    return items[:item_cap]
+    result = items[:item_cap]
+    _run_items_used += len(result)
+    return result

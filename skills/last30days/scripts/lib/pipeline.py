@@ -1986,6 +1986,7 @@ def run(
     # parallel entity sub-runs can still share in-run hits.
     if not internal_subrun:
         youtube_yt.reset_search_cache()
+    apify_client.reset_budget()
     settings = _resolve_depth_settings(depth, config)
     requested_sources = normalize_requested_sources(requested_sources)
     # Wall-clock origin for budget-aware enrichment lanes. Amazon review
@@ -4637,19 +4638,18 @@ def _retrieve_stream_impl(
         )
         return pinterest.parse_pinterest_response(result), _result_outcome_artifact(source, result)
     if source == "xiaohongshu":
-        # Apify backend first (no cookies); local cookie API as fallback.
+        # Local cookie API first (free); Apify backend as fallback (paid).
+        base_url = env.get_xiaohongshu_api_base(config)
+        if base_url:
+            return xiaohongshu_api.search_feeds(
+                subquery.search_query, from_date, to_date, base_url, depth=depth,
+            ), {}
         if config.get("APIFY_API_TOKEN"):
             return xiaohongshu_apify.search_xiaohongshu(
                 subquery.search_query, from_date, to_date,
                 token=config["APIFY_API_TOKEN"], depth=depth,
             ), {}
-        return xiaohongshu_api.search_feeds(
-            subquery.search_query,
-            from_date,
-            to_date,
-            env.get_xiaohongshu_api_base(config),
-            depth=depth,
-        ), {}
+        return [], {}
     if source == "facebook":
         result = facebook.search_facebook(
             subquery.search_query, from_date, to_date,

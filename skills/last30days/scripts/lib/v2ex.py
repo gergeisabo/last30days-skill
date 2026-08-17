@@ -14,7 +14,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from . import http
+from . import http, log
 
 BASE = "https://www.v2ex.com"
 
@@ -37,7 +37,8 @@ def search_v2ex(
     for feed in feeds:
         try:
             batch = http.get(f"{BASE}/api/topics/{feed}.json", timeout=15, retries=1)
-        except (OSError, http.HTTPError):
+        except (OSError, http.HTTPError) as exc:
+            log.source_log("v2ex", f"fetch failed: {exc}")
             continue
         if not isinstance(batch, list):
             continue

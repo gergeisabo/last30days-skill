@@ -290,6 +290,8 @@ Use this capability rule:
 
 When host web search is available, export `LAST30DAYS_NATIVE_SEARCH=1` in the same shell as the engine invocation so the engine does not also run the lower-quality keyless web floor. Leave it unset when the agent session has no web-search tool.
 
+**Host X search lane (`x_search` tool).** If the agent session exposes a dedicated X/Twitter search tool (Hermes `x_search`, backed by xAI SuperGrok OAuth - no `.env` key needed), it IS the X source for this run: the engine subprocess cannot call host tools, so the host fills the lane. After the engine completes, run 2-3 `x_search` calls with `from_date`/`to_date` matching the engine's date range (one primary-topic call, one product/news-angle call, one handle-scoped call via `allowed_x_handles` for person/company topics when Step 0.5 resolved handles). Weave the returned posts into the synthesis exactly as engine X items: quote post text, attribute to @handle, carry engagement when given, and cite `per @handle` in KEY PATTERNS. Treat a `degraded: true` result (filters active, zero citations) as no-evidence - widen the query once or drop the date window, never synthesize from a degraded answer. When the host x_search lane covered X, skip the engine-side "Unlock X" prompt even if the engine's own X source returned 0.
+
 Resolving this correctly prevents the second-most-common failure mode of this skill: the model skips Step 0.5 / 0.55 and runs the engine bare with only keyword search. The output looks fine but misses founder X timelines, GitHub repo activity, subreddit-specific threads, and current first-party positioning.
 
 After resolving host web search, run the first-run gate below before anything else.
@@ -2007,7 +2009,7 @@ Headlines should be specific and newsy ("BULLY dropped and it's dominating", "Eu
 
 If the research output contains a `**🔍 Research Coverage:**` block, render it verbatim right before the stats block. This tells the user which core sources are missing and how to unlock them. Do NOT render this block if it is absent from the output (100% coverage = no nudge).
 
-**Just-in-time X unlock:** If X returned 0 results because no X auth is configured (no AUTH_TOKEN/CT0, no XAI_API_KEY, no FROM_BROWSER), offer to set it up right there.
+**Just-in-time X unlock:** If X returned 0 results because no X auth is configured (no AUTH_TOKEN/CT0, no XAI_API_KEY, no FROM_BROWSER), FIRST check whether the host session exposes an `x_search` tool (Hermes, xAI SuperGrok OAuth) - if yes, use it as the X lane per STEP 0 and do NOT prompt the user. Otherwise offer to set it up right there.
 
 **Call AskUserQuestion.** Question: "X/Twitter wasn't searched. Want to unlock it?"
 
